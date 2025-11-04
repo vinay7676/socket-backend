@@ -1,10 +1,10 @@
-// server.js
-require('dotenv').config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const authRoutes = require("./auth"); // ✅ Import auth routes
+const User = require("./usermodel");  // ✅ Import User model
 
 const app = express();
 app.use(cors());
@@ -12,12 +12,15 @@ app.use(express.json());
 
 // ✅ MongoDB Connection
 mongoose
-  .connect(process.env.MONGODB_URI, {
+  .connect("mongodb://localhost:27017/chatApp2", {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.log(err));
+
+// ✅ Routes
+app.use("/auth", authRoutes); // /auth/register , /auth/login
 
 // ✅ Message Schema
 const messageSchema = new mongoose.Schema({
@@ -29,26 +32,17 @@ const messageSchema = new mongoose.Schema({
 
 const Message = mongoose.model("Message", messageSchema);
 
-// ✅ User Schema - to track all users (online and offline)
-const userSchema = new mongoose.Schema({
-  username: { type: String, unique: true },
-  isOnline: { type: Boolean, default: false },
-  lastSeen: { type: Date, default: Date.now },
-});
-
-const User = mongoose.model("User", userSchema);
-
 // ✅ HTTP + Socket setup
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    origin: "http://localhost:5173",
     methods: ["GET", "POST"],
   },
 });
 
 // ✅ Store active users
-const activeUsers = new Map(); // socketId -> username
+const activeUsers = new Map();
 
 // ✅ REST API to get messages between two users
 app.get("/messages/:user1/:user2", async (req, res) => {
@@ -68,28 +62,19 @@ app.get("/users", async (req, res) => {
   res.json(users);
 });
 
-// ✅ Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-
 // ✅ Socket Events
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   socket.on("register_user", async (username) => {
     activeUsers.set(socket.id, username);
-    
-    // Update or create user in database
+
     await User.findOneAndUpdate(
       { username },
       { isOnline: true, lastSeen: new Date() },
       { upsert: true, new: true }
     );
-    
-    console.log(`User ${username} registered with socket ${socket.id}`);
-    
-    // Broadcast updated user list to all clients
+
     const allUsers = await User.find({}).sort({ isOnline: -1, username: 1 });
     io.emit("users_update", allUsers);
   });
@@ -102,28 +87,23 @@ io.on("connection", (socket) => {
     });
     await newMessage.save();
 
-    // Find receiver's socket ID
     const receiverSocketId = Array.from(activeUsers.entries()).find(
-      ([_, username]) => username === data.receiver
+      ([, name]) => name === data.receiver
     )?.[0];
 
-    // Send to receiver only
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("receive_message", newMessage);
     }
   });
 
   socket.on("user_logout", async (username) => {
-    // Set user as offline
     await User.findOneAndUpdate(
       { username },
       { isOnline: false, lastSeen: new Date() }
     );
-    
+
     activeUsers.delete(socket.id);
-    console.log(`User ${username} logged out`);
-    
-    // Broadcast updated user list
+
     const allUsers = await User.find({}).sort({ isOnline: -1, username: 1 });
     io.emit("users_update", allUsers);
   });
@@ -131,16 +111,12 @@ io.on("connection", (socket) => {
   socket.on("disconnect", async () => {
     const username = activeUsers.get(socket.id);
     if (username) {
-      // Set user as offline
       await User.findOneAndUpdate(
         { username },
         { isOnline: false, lastSeen: new Date() }
       );
-      
       activeUsers.delete(socket.id);
-      console.log("User disconnected:", socket.id);
-      
-      // Broadcast updated user list
+
       const allUsers = await User.find({}).sort({ isOnline: -1, username: 1 });
       io.emit("users_update", allUsers);
     }
@@ -148,5 +124,4 @@ io.on("connection", (socket) => {
 });
 
 // ✅ Start server
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(5000, () => console.log("🚀 Server running on port 5000"));
